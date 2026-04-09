@@ -35,13 +35,12 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# ===================== Умное распознавание категории =====================
+# ===================== Умное распознавание =====================
 def detect_category(text: str):
     text = text.lower()
-    
-    bot_keywords = ["бот", "bots", "telegram", "тг", "tg", "bot", "бота", "боты", "телеграм"]
-    site_keywords = ["сайт", "сайты", "landing", "лендинг", "визитка", "магазин", "web", "website", "интернет-магазин"]
-    app_keywords = ["приложение", "приложения", "app", "apps", "мобильное", "android", "ios", "мобил", "приложение"]
+    bot_keywords = ["бот", "bots", "telegram", "тг", "tg", "bot", "бота", "боты"]
+    site_keywords = ["сайт", "сайты", "landing", "лендинг", "визитка", "магазин", "web", "website"]
+    app_keywords = ["приложение", "приложения", "app", "apps", "мобильное", "android", "ios", "мобил"]
 
     if any(word in text for word in bot_keywords):
         return "bots"
@@ -49,81 +48,69 @@ def detect_category(text: str):
         return "sites"
     if any(word in text for word in app_keywords):
         return "apps"
-    
     return None
 
 # ===================== /start =====================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    text = "✺ <b>Luce.</b>\n\nЦифровой люкс нового поколения.\n\nВыберите раздел:"
-    await message.answer(text, reply_markup=get_main_menu())
+    await message.answer("✺ <b>Luce.</b>\n\nЦифровой люкс нового поколения.\n\nВыберите раздел:", 
+                         reply_markup=get_main_menu())
 
 # ===================== Начать проект =====================
 @dp.callback_query(F.data == "start_project")
 async def start_project(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         "💎 <b>Начать проект</b>\n\n"
-        "Опишите вашу идею. Например:\n"
-        "«бот стихоплет», «сайт пугалка», «мобильное приложение для записей»"
+        "Опишите вашу идею (например: «бот стихоплет», «сайт пугалка», «мобильное приложение»)"
     )
     await state.set_state(ProjectForm.waiting_description)
 
-# ===================== Умная обработка описания =====================
+# ===================== Обработка описания =====================
 @dp.message(ProjectForm.waiting_description)
 async def process_description(message: types.Message, state: FSMContext):
     category = detect_category(message.text)
 
     if category == "bots":
-        text = (
-            "🤖 <b>Вы ищете Telegram-бота</b>\n\n"
-            "Цены на ботов:\n"
-            "• Простой бот — <b>от 1 000 ₽</b>\n"
-            "• Средний бот — <b>от 2 000 ₽</b>\n"
-            "• Сложный бот / магазин — <b>от 3 490 ₽</b>\n\n"
-        )
+        text = "🤖 <b>Вы ищете Telegram-бота</b>\n\nЦены:\n• Простой — от 35 000 ₽\n• Средний — от 65 000 ₽\n• Сложный — от 99 000 ₽\n\n"
     elif category == "sites":
-        text = (
-            "🌐 <b>Вы ищете сайт</b>\n\n"
-            "Цены на сайты:\n"
-            "• Сайт-визитка — <b>от 1 000 ₽</b>\n"
-            "• Премиальный лендинг — <b>от 2 000 ₽</b>\n"
-            "• Корпоративный сайт — <b>от 3 000 ₽</b>\n"
-            "• Интернет-магазин — <b>от 5 000 ₽</b>\n\n"
-        )
+        text = "🌐 <b>Вы ищете сайт</b>\n\nЦены:\n• Визитка — от 59 000 ₽\n• Лендинг — от 99 000 ₽\n• Корпоративный — от 149 000 ₽\n• Магазин — от 189 000 ₽\n\n"
     elif category == "apps":
-        text = (
-            "📱 <b>Вы ищете мобильное приложение</b>\n\n"
-            "Цены на приложения:\n"
-            "• Простое приложение — <b>от 2 000 ₽</b>\n"
-            "• Полноценное приложение (iOS + Android) — <b>от 8 000 ₽</b>\n\n"
-        )
+        text = "📱 <b>Вы ищете мобильное приложение</b>\n\nЦены:\n• Простое — от 149 000 ₽\n• Полноценное — от 249 000 ₽\n\n"
     else:
-        # Если ничего не распознал
-        await state.update_data(description=message.text)
-        await message.answer("Отлично! Какой у вас примерный бюджет проекта?")
-        await state.set_state(ProjectForm.waiting_budget)
-        return
+        text = ""
 
-    # Если категория определена — показываем цены + кнопку продолжения
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Продолжить оформление заявки", callback_data="continue_form")]
-    ])
-    await message.answer(text, reply_markup=kb)
+    await message.answer(text + "Какой у вас примерный бюджет проекта?")
     await state.update_data(description=message.text)
-
-# ===================== Продолжение формы =====================
-@dp.callback_query(F.data == "continue_form")
-async def continue_form(call: types.CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Отлично! Какой у вас примерный бюджет проекта?")
     await state.set_state(ProjectForm.waiting_budget)
 
-# ===================== Остальная часть формы =====================
+# ===================== Проверка бюджета (главное изменение) =====================
 @dp.message(ProjectForm.waiting_budget)
 async def process_budget(message: types.Message, state: FSMContext):
+    budget_text = message.text.lower().strip()
+
+    # Пытаемся понять число
+    import re
+    numbers = re.findall(r'\d+', budget_text)
+    
+    budget_num = 0
+    if numbers:
+        budget_num = int(numbers[0])
+
+    if budget_num < 1000 and budget_num != 0:
+        await message.answer(
+            "❌ Минимальный бюджет для проектов — **1000 ₽**.\n\n"
+            "Если ваш бюджет меньше, к сожалению, мы не сможем взять проект.\n"
+            "Хотите начать заново? Напишите /start"
+        )
+        await state.clear()
+        return
+
+    # Если бюджет нормальный — продолжаем
     await state.update_data(budget=message.text)
-    await message.answer("Последний шаг. Укажите ваши контакты (имя + Telegram или телефон):")
+    await message.answer("Отлично! Последний шаг.\nУкажите ваши контакты (имя + Telegram или телефон):")
     await state.set_state(ProjectForm.waiting_contact)
 
+# ===================== Финальная отправка =====================
 @dp.message(ProjectForm.waiting_contact)
 async def process_contact(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -136,34 +123,20 @@ async def process_contact(message: types.Message, state: FSMContext):
         f"📞 Контакты: {message.text}"
     )
     await bot.send_message(ADMIN_ID, final_text)
-    await message.answer("✅ Заявка отправлена! Мы свяжемся с вами очень скоро.", reply_markup=get_main_menu())
+    await message.answer("✅ Заявка отправлена! Мы свяжемся с вами в ближайшее время.", reply_markup=get_main_menu())
     await state.clear()
 
 # ===================== Остальные разделы =====================
-@dp.callback_query(F.data == "services")
-async def show_services(call: types.CallbackQuery):
-    text = "🛠 <b>Услуги</b>\n\n• Премиальные сайты\n• Telegram-боты\n• Мобильные приложения\n• Цифровой брендинг"
-    await call.message.edit_text(text, reply_markup=get_main_menu())
-
-@dp.callback_query(F.data == "prices")
-async def show_prices(call: types.CallbackQuery):
-    text = "💰 <b>Цены</b>\n\nПодробные цены смотрите в разделе «Услуги» или нажмите «Начать проект»"
-    await call.message.edit_text(text, reply_markup=get_main_menu())
-
-@dp.callback_query(F.data == "about")
-async def show_about(call: types.CallbackQuery):
-    text = "👑 <b>О нас</b>\n\nLuce. — независимая студия цифровой роскоши."
-    await call.message.edit_text(text, reply_markup=get_main_menu())
-
-@dp.callback_query(F.data == "process")
-async def show_process(call: types.CallbackQuery):
-    text = "⚡ <b>Процесс работы</b>\n\n1. Брифинг\n2. Дизайн\n3. Разработка\n4. Тестирование\n5. Запуск"
-    await call.message.edit_text(text, reply_markup=get_main_menu())
-
-@dp.callback_query(F.data == "contact")
-async def show_contact(call: types.CallbackQuery):
-    text = "📞 <b>Связаться</b>\n\nНапишите нам: mollyhuetonn@gmail.com"
-    await call.message.edit_text(text, reply_markup=get_main_menu())
+@dp.callback_query(F.data.in_(["services", "prices", "about", "process", "contact"]))
+async def show_sections(call: types.CallbackQuery):
+    texts = {
+        "services": "🛠 <b>Услуги</b>\n\n• Премиальные сайты\n• Telegram-боты\n• Мобильные приложения\n• Брендинг",
+        "prices": "💰 <b>Цены</b>\n\nПодробные цены смотрите при оформлении заявки",
+        "about": "👑 <b>О нас</b>\n\nLuce. — студия цифровой роскоши",
+        "process": "⚡ <b>Процесс</b>\n\n1. Брифинг\n2. Дизайн\n3. Разработка\n4. Тестирование\n5. Запуск",
+        "contact": "📞 <b>Связаться</b>\n\nНапишите: mollyhuetonn@gmail.com"
+    }
+    await call.message.edit_text(texts[call.data], reply_markup=get_main_menu())
 
 # ===================== Запуск =====================
 async def main():
