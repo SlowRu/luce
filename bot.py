@@ -9,8 +9,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 # ===================== НАСТРОЙКИ =====================
-TOKEN = "ТОКЕН_СЮДА"
-ADMIN_ID = ТВОЙ_ID_СЮДА
+TOKEN = "8680466852:AAGlGmoqRCFOjJsXxk6s7wNWfWV45ylyu3I"
+ADMIN_ID = 8027714217
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -77,25 +77,25 @@ async def process_description(message: types.Message, state: FSMContext):
         text = (
             "🤖 <b>Вы ищете Telegram-бота</b>\n\n"
             "Цены на ботов:\n"
-            "• Простой бот — <b>от 35 000 ₽</b>\n"
-            "• Средний бот — <b>от 65 000 ₽</b>\n"
-            "• Сложный бот / магазин — <b>от 99 000 ₽</b>\n\n"
+            "• Простой бот — <b>от 1 000 ₽</b>\n"
+            "• Средний бот — <b>от 2 000 ₽</b>\n"
+            "• Сложный бот / магазин — <b>от 3 490 ₽</b>\n\n"
         )
     elif category == "sites":
         text = (
             "🌐 <b>Вы ищете сайт</b>\n\n"
             "Цены на сайты:\n"
-            "• Сайт-визитка — <b>от 59 000 ₽</b>\n"
-            "• Премиальный лендинг — <b>от 99 000 ₽</b>\n"
-            "• Корпоративный сайт — <b>от 149 000 ₽</b>\n"
-            "• Интернет-магазин — <b>от 189 000 ₽</b>\n\n"
+            "• Сайт-визитка — <b>от 1 000 ₽</b>\n"
+            "• Премиальный лендинг — <b>от 2 000 ₽</b>\n"
+            "• Корпоративный сайт — <b>от 3 000 ₽</b>\n"
+            "• Интернет-магазин — <b>от 5 000 ₽</b>\n\n"
         )
     elif category == "apps":
         text = (
             "📱 <b>Вы ищете мобильное приложение</b>\n\n"
             "Цены на приложения:\n"
-            "• Простое приложение — <b>от 149 000 ₽</b>\n"
-            "• Полноценное приложение (iOS + Android) — <b>от 249 000 ₽</b>\n\n"
+            "• Простое приложение — <b>от 2 000 ₽</b>\n"
+            "• Полноценное приложение (iOS + Android) — <b>от 8 000 ₽</b>\n\n"
         )
     else:
         # Если ничего не распознал
