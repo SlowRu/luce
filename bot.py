@@ -1,13 +1,14 @@
+import json
 import logging
+from pathlib import Path
 from aiogram import Bot, Dispatcher, Router, F, types
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from config import BOT_TOKEN, SITE_URL, CONTACT_EMAIL
+from config import BOT_TOKEN, SITE_URL, CONTACT_EMAIL, ADMIN_IDS
 
 logging.basicConfig(level=logging.INFO)
 
@@ -16,6 +17,49 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
+
+# ===================== ADMIN STORAGE =====================
+
+ADMINS_FILE = Path(__file__).parent / "admins.json"
+
+
+def load_admins() -> list[int]:
+    """Load admin IDs from config + JSON file."""
+    ids = list(ADMIN_IDS)
+    if ADMINS_FILE.exists():
+        try:
+            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+                ids.extend(json.load(f))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return list(set(ids))
+
+
+def save_admin(user_id: int) -> None:
+    """Add user_id to admins.json if not already there."""
+    admins = load_admins()
+    if user_id not in admins:
+        admins.append(user_id)
+    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(admins, f, indent=2)
+
+
+def remove_admin(user_id: int) -> None:
+    """Remove user_id from admins.json."""
+    admins = load_admins()
+    if user_id in admins:
+        admins.remove(user_id)
+    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(admins, f, indent=2)
+
+
+async def notify_admins(text: str) -> None:
+    """Send message to all registered admins."""
+    for admin_id in load_admins():
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception as e:
+            logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
 
 # ===================== KEYBOARDS =====================
 
@@ -65,7 +109,7 @@ SERVICES = {
             "Простые — уведомления, FAQ, визитки\n"
             "Средние — магазины, сервисные боты, опросы\n"
             "Сложные — AI-ассистенты, CRM-интеграции, платёжные системы\n\n"
-            "Стоимость: от 1 000 до 300 000+ руб.\n"
+            "Стоимость: от 15 000 до 300 000+ руб.\n"
             "Срок: от 3 до 30 дней"
         ),
     },
@@ -77,7 +121,7 @@ SERVICES = {
             "Многостраничные корпоративные сайты\n"
             "Интернет-магазины с CMS\n"
             "Веб-приложения и SaaS-платформы\n\n"
-            "Стоимость: от 1 000 до 800 000+ руб.\n"
+            "Стоимость: от 30 000 до 800 000+ руб.\n"
             "Срок: от 7 до 60 дней"
         ),
     },
@@ -89,7 +133,7 @@ SERVICES = {
             "Flutter / React Native — обе платформы\n"
             "Прототипирование и дизайн интерфейсов\n"
             "Публикация в App Store и Google Play\n\n"
-            "Стоимость: от 1 000 до 1 500 000+ руб.\n"
+            "Стоимость: от 80 000 до 1 500 000+ руб.\n"
             "Срок: от 14 до 90 дней"
         ),
     },
@@ -101,7 +145,7 @@ SERVICES = {
             "Рекомендательные системы\n"
             "Предиктивная аналитика\n"
             "Обработка изображений и текста\n\n"
-            "Стоимость: от 1 000 до 500 000+ руб.\n"
+            "Стоимость: от 50 000 до 500 000+ руб.\n"
             "Срок: от 14 до 60 дней"
         ),
     },
@@ -113,7 +157,7 @@ SERVICES = {
             "Прототипы в Figma\n"
             "Дизайн-системы\n"
             "Аудит существующих интерфейсов\n\n"
-            "Стоимость: от 1 000 до 200 000 руб.\n"
+            "Стоимость: от 20 000 до 200 000 руб.\n"
             "Срок: от 5 до 30 дней"
         ),
     },
@@ -125,7 +169,7 @@ SERVICES = {
             "Выбор технологий и стека\n"
             "Оптимизация процессов\n"
             "Планирование масштабирования\n\n"
-            "Стоимость: от 1 000 руб./час\n"
+            "Стоимость: от 10 000 руб./час\n"
             "Формат: онлайн-встречи + отчёт"
         ),
     },
@@ -137,6 +181,9 @@ class OrderState(StatesGroup):
     waiting_for_name = State()
     waiting_for_contact = State()
     waiting_for_details = State()
+
+class AdminState(StatesGroup):
+    waiting_for_forward_id = State()
 
 # ===================== HANDLERS =====================
 
@@ -234,8 +281,8 @@ async def get_details(message: types.Message, state: FSMContext):
     await message.answer(user_msg, parse_mode="HTML")
     await state.clear()
 
-    # Лог заявки в консоль (для админа)
-    logging.info(f"\n{'='*40}\n{admin_msg}\n{'='*40}")
+    # Отправляем заявку всем админам
+    await notify_admins(admin_msg)
 
 @router.callback_query(F.data == "process")
 async def show_process(call: types.CallbackQuery):
@@ -254,7 +301,7 @@ async def show_process(call: types.CallbackQuery):
 async def show_about(call: types.CallbackQuery):
     text = (
         "<b>LUCED</b> — команда энтузиастов, которая верит в силу технологий.\n\n"
-        "С 2025 года мы создаём решения, которые помогают бизнесу расти и развиваться.\n\n"
+        "С 2019 года мы создаём решения, которые помогают бизнесу расти и развиваться.\n\n"
         "Наши ценности:\n"
         "Инновации — всегда на передовой\n"
         "Прозрачность — честные сроки и цены\n"
@@ -283,10 +330,70 @@ async def go_back(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text(text, reply_markup=main_menu())
     await call.answer()
 
+# ===================== ADMIN COMMANDS =====================
+
+@router.message(F.text == "/admin")
+async def cmd_admin(message: types.Message):
+    """Добавить себя как владельца бота."""
+    user_id = message.from_user.id
+    admins = load_admins()
+
+    if user_id in admins:
+        await message.answer("Вы уже зарегистрированы как владелец.")
+        return
+
+    save_admin(user_id)
+    await message.answer(
+        f"Вы зарегистрированы как владелец бота!\n"
+        f"Ваш ID: <code>{user_id}</code>\n\n"
+        f"Теперь все заявки будут приходить вам в личные сообщения.",
+        parse_mode="HTML"
+    )
+
+    # Уведомить других админов
+    other_admins = [a for a in admins if a != user_id]
+    for admin_id in other_admins:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"Новый владелец зарегистрирован: "
+                f"{message.from_user.full_name} (ID: <code>{user_id}</code>)",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+@router.message(F.text == "/admin_remove")
+async def cmd_admin_remove(message: types.Message):
+    """Удалить себя из списка владельцев."""
+    user_id = message.from_user.id
+    admins = load_admins()
+
+    if user_id not in admins:
+        await message.answer("Вы не зарегистрированы как владелец.")
+        return
+
+    remove_admin(user_id)
+    await message.answer("Вы удалены из списка владельцев.")
+
+@router.message(F.text == "/admins")
+async def cmd_admins_list(message: types.Message):
+    """Показать список владельцев."""
+    admins = load_admins()
+    if not admins:
+        await message.answer("Владельцев пока нет. Отправьте /admin чтобы стать владельцем.")
+        return
+
+    text = "Владельцы бота:\n\n"
+    for aid in admins:
+        text += f"• <code>{aid}</code>\n"
+    await message.answer(text, parse_mode="HTML")
+
 # ===================== RUN =====================
 
 async def main():
-    logging.info("Запуск бота...")
+    admins = load_admins()
+    logging.info(f"Запуск бота... Владельцы: {admins}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
