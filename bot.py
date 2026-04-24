@@ -50,15 +50,17 @@ def remove_admin(user_id: int) -> None:
         json.dump(admins, f, indent=2)
 
 
-async def notify_admins(text: str) -> None:
+async def notify_admins(text: str, photo: str = None) -> None:
     for admin_id in load_admins():
         try:
-            await bot.send_message(admin_id, text, parse_mode="HTML")
+            if photo:
+                await bot.send_photo(admin_id, photo=photo, caption=text, parse_mode="HTML")
+            else:
+                await bot.send_message(admin_id, text, parse_mode="HTML")
         except Exception as e:
             logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
 
 # ===================== SERVICE CATALOG =====================
-# Каждая услуга имеет тарифы: id, название, цена, описание, срок
 
 CATALOG = {
     "bots": {
@@ -68,42 +70,42 @@ CATALOG = {
             {
                 "id": "bot_faq",
                 "name": "Бот-визитка / FAQ",
-                "price": 500,
+                "price": 50,
                 "desc": "Простой бот с информацией о компании, контактами и FAQ",
                 "time": "3-5 дней",
             },
             {
                 "id": "bot_notify",
                 "name": "Бот уведомлений",
-                "price": 1_000,
+                "price": 100,
                 "desc": "Автоматические уведомления, напоминания, оповещения о событиях",
                 "time": "5-7 дней",
             },
             {
                 "id": "bot_shop",
                 "name": "Бот-магазин",
-                "price": 2_000,
+                "price": 200,
                 "desc": "Каталог товаров, корзина, оплата через Telegram Stars / ЮKassa",
                 "time": "10-14 дней",
             },
             {
                 "id": "bot_support",
                 "name": "Бот техподдержки",
-                "price": 2_500,
+                "price": 250,
                 "desc": "Тикет-система, распределение заявок, чат с оператором",
                 "time": "7-10 дней",
             },
             {
                 "id": "bot_ai",
                 "name": "AI-ассистент",
-                "price": 5_000,
+                "price": 500,
                 "desc": "Умный бот на базе LLM с базой знаний, RAG и контекстом",
                 "time": "14-21 дней",
             },
             {
                 "id": "bot_crm",
                 "name": "CRM-бот",
-                "price": 10_000,
+                "price": 1_000,
                 "desc": "Управление клиентами, воронки, интеграция с Bitrix24/AmoCRM",
                 "time": "21-30 дней",
             },
@@ -116,35 +118,35 @@ CATALOG = {
             {
                 "id": "site_landing",
                 "name": "Лендинг",
-                "price": 1_000,
+                "price": 100,
                 "desc": "Одностраничный промо-сайт с анимациями и формой заявки",
                 "time": "5-7 дней",
             },
             {
                 "id": "site_corp",
                 "name": "Корпоративный сайт",
-                "price": 2_000,
+                "price": 200,
                 "desc": "Многостраничный сайт: главная, услуги, о нас, контакты, блог",
                 "time": "14-21 дней",
             },
             {
                 "id": "site_shop",
                 "name": "Интернет-магазин",
-                "price": 4_000,
+                "price": 400,
                 "desc": "Каталог, корзина, оплата, личный кабинет, админ-панель",
                 "time": "21-35 дней",
             },
             {
                 "id": "site_saas",
                 "name": "Веб-приложение / SaaS",
-                "price": 10_000,
+                "price": 1_000,
                 "desc": "Сложный веб-сервис с авторизацией, дашбордами, API",
                 "time": "30-60 дней",
             },
             {
                 "id": "site_seo",
                 "name": "SEO-оптимизация сайта",
-                "price": 10_000,
+                "price": 1_000,
                 "desc": "Аудит, оптимизация скорости, мета-теги, структурированные данные",
                 "time": "5-10 дней",
             },
@@ -157,28 +159,28 @@ CATALOG = {
             {
                 "id": "app_flutter",
                 "name": "Кроссплатформенное (Flutter)",
-                "price": 10_000,
+                "price": 1_000,
                 "desc": "Один код — iOS + Android. Быстро и экономично",
                 "time": "21-35 дней",
             },
             {
                 "id": "app_ios",
                 "name": "Нативное iOS",
-                "price": 15_000,
+                "price": 1_500,
                 "desc": "Swift, SwiftUI. Максимальная производительность для Apple",
                 "time": "30-45 дней",
             },
             {
                 "id": "app_android",
                 "name": "Нативное Android",
-                "price": 8_000,
+                "price": 800,
                 "desc": "Kotlin, Jetpack Compose. Полный доступ к возможностям Android",
                 "time": "30-45 дней",
             },
             {
                 "id": "app_mvp",
                 "name": "MVP приложения",
-                "price": 5_000,
+                "price": 500,
                 "desc": "Минимальная рабочая версия для теста гипотезы",
                 "time": "14-21 дней",
             },
@@ -191,28 +193,28 @@ CATALOG = {
             {
                 "id": "ai_chatbot",
                 "name": "AI чат-бот для сайта",
-                "price": 5_000,
+                "price": 500,
                 "desc": "Умный помощник на сайте с обучением на ваших данных",
                 "time": "7-14 дней",
             },
             {
                 "id": "ai_recs",
                 "name": "Рекомендательная система",
-                "price": 10_000,
+                "price": 1_000,
                 "desc": "Персональные рекомендации товаров, контента, услуг",
                 "time": "14-28 дней",
             },
             {
                 "id": "ai_analytics",
                 "name": "Предиктивная аналитика",
-                "price": 15_000,
+                "price": 1_500,
                 "desc": "Прогнозирование продаж, спроса, оттока клиентов",
                 "time": "21-35 дней",
             },
             {
                 "id": "ai_vision",
                 "name": "Компьютерное зрение",
-                "price": 20_000,
+                "price": 2_000,
                 "desc": "Распознавание объектов, лиц, документов, OCR",
                 "time": "28-45 дней",
             },
@@ -225,28 +227,28 @@ CATALOG = {
             {
                 "id": "design_landing",
                 "name": "Дизайн лендинга",
-                "price": 2_000,
+                "price": 200,
                 "desc": "Прототип + дизайн всех экранов в Figma",
                 "time": "3-5 дней",
             },
             {
                 "id": "design_multi",
                 "name": "Дизайн многостраничника",
-                "price": 5_000,
+                "price": 500,
                 "desc": "Полный дизайн 5-10 страниц с адаптивом",
                 "time": "7-14 дней",
             },
             {
                 "id": "design_system",
                 "name": "Дизайн-система",
-                "price": 8_000,
+                "price": 800,
                 "desc": "Компоненты, токены, гайдлайны для всей команды",
                 "time": "14-21 дней",
             },
             {
                 "id": "design_audit",
                 "name": "Аудит интерфейса",
-                "price": 2_500,
+                "price": 250,
                 "desc": "Анализ UX, рекомендации по улучшению, отчёт",
                 "time": "3-7 дней",
             },
@@ -259,21 +261,21 @@ CATALOG = {
             {
                 "id": "devops_setup",
                 "name": "Настройка инфраструктуры",
-                "price": 4_000,
+                "price": 400,
                 "desc": "Серверы, CI/CD, Docker, мониторинг",
                 "time": "5-10 дней",
             },
             {
                 "id": "devops_migrate",
                 "name": "Миграция в облако",
-                "price": 7_000,
+                "price": 700,
                 "desc": "Переезд на AWS/GCP/Azure без простоя",
                 "time": "7-14 дней",
             },
             {
                 "id": "devops_audit",
                 "name": "Аудит инфраструктуры",
-                "price": 3_000,
+                "price": 300,
                 "desc": "Оценка безопасности, производительности, стоимости",
                 "time": "3-5 дней",
             },
@@ -286,21 +288,21 @@ CATALOG = {
             {
                 "id": "consult_hour",
                 "name": "Консультация (1 час)",
-                "price": 1_000,
+                "price": 100,
                 "desc": "Онлайн-встреча, обсуждение задачи, рекомендации",
                 "time": "1 час",
             },
             {
                 "id": "consult_pack5",
                 "name": "Пакет консультаций (5 часов)",
-                "price": 4_000,
+                "price": 400,
                 "desc": "5 часов консультаций + письменный отчёт",
                 "time": "гибко",
             },
             {
                 "id": "consult_cto",
                 "name": "Fractional CTO",
-                "price": 15_000,
+                "price": 1_500,
                 "desc": "Технический директор на аутсорсе — стратегия, архитектура, контроль",
                 "time": "от 1 месяца",
             },
@@ -313,21 +315,21 @@ CATALOG = {
             {
                 "id": "support_basic",
                 "name": "Базовая поддержка",
-                "price": 11_500,
+                "price": 1_150,
                 "desc": "Мониторинг, бэкапы, обновления (1 проект/мес)",
                 "time": "ежемесячно",
             },
             {
                 "id": "support_pro",
                 "name": "Про поддержка",
-                "price": 10_000,
+                "price": 1_000,
                 "desc": "Базовая + мелкие доработки до 10 часов/мес",
                 "time": "ежемесячно",
             },
             {
                 "id": "support_enterprise",
                 "name": "Enterprise",
-                "price": 50_000,
+                "price": 5_000,
                 "desc": "Про + выделенный инженер, SLA, приоритетная поддержка",
                 "time": "ежемесячно",
             },
@@ -351,6 +353,7 @@ def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Каталог услуг", callback_data="services")],
         [InlineKeyboardButton(text="Корзина", callback_data="cart")],
+        [InlineKeyboardButton(text="Инвайты ⭐", callback_data="invites")],
         [InlineKeyboardButton(text="Как мы работаем", callback_data="process")],
         [InlineKeyboardButton(text="О нас", callback_data="about")],
         [InlineKeyboardButton(text="Контакты", callback_data="contact")],
@@ -408,6 +411,12 @@ def process_kb():
         [InlineKeyboardButton(text="Назад", callback_data="back")],
     ])
 
+def invite_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отправить подтверждение", callback_data="send_invite_proof")],
+        [InlineKeyboardButton(text="Назад", callback_data="back")],
+    ])
+
 # ===================== FSM =====================
 
 class OrderState(StatesGroup):
@@ -417,6 +426,9 @@ class OrderState(StatesGroup):
 
 class AdminState(StatesGroup):
     waiting_for_admin_id = State()
+
+class InviteState(StatesGroup):
+    waiting_for_proof = State()
 
 # ===================== CART HELPERS =====================
 
@@ -485,7 +497,8 @@ def cart_text(user_id: int) -> str:
 # ===================== HANDLERS =====================
 
 @router.message(F.text == "/start")
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     text = (
         "Добро пожаловать в <b>LUCED</b>!\n\n"
         "С 2025 года мы создаём технологические решения:\n"
@@ -549,6 +562,7 @@ async def handle_add_cart(call: types.CallbackQuery):
         await call.answer()
         return
     cat_key, item = result
+    cat = CATALOG[cat_key]
     add_to_cart(call.from_user.id, item_id)
     total = cart_total(call.from_user.id)
     await call.answer(f"Добавлено: {item['name']}", show_alert=False)
@@ -609,9 +623,11 @@ async def get_details(message: types.Message, state: FSMContext):
     )
 
     admin_msg = (
-        f"Новый заказ!\n\n"
+        f"📦 <b>Новый заказ!</b>\n\n"
         f"Клиент: {name}\n"
-        f"Контакт: {contact}\n\n"
+        f"Контакт: {contact}\n"
+        f"TG: @{message.from_user.username or 'нет'}\n"
+        f"ID: <code>{message.from_user.id}</code>\n\n"
         f"<b>Состав заказа:</b>\n{items_list}\n\n"
         f"<b>Итого: {fmt_price(total)} ₽</b>\n\n"
         f"Комментарий: {details}"
@@ -626,7 +642,7 @@ async def get_details(message: types.Message, state: FSMContext):
         f"Email: {CONTACT_EMAIL}"
     )
 
-    await message.answer(user_msg, parse_mode="HTML")
+    await message.answer(user_msg, parse_mode="HTML", reply_markup=back_button())
     clear_cart(message.from_user.id)
     await state.clear()
     await notify_admins(admin_msg)
@@ -647,6 +663,134 @@ async def handle_clear_cart(call: types.CallbackQuery):
     await call.message.edit_text("Корзина очищена", reply_markup=back_button("services"))
     await call.answer()
 
+# ===================== INVITES =====================
+
+@router.callback_query(F.data == "invites")
+async def show_invites(call: types.CallbackQuery):
+    text = (
+        "<b>⭐ Программа инвайтов</b>\n\n"
+        "Пригласите <b>5 человек</b> в наш канал и получите "
+        "<b>50 Telegram Stars</b> в качестве награды.\n\n"
+        "<b>Как это работает:</b>\n"
+        "1. Пригласите 5 друзей в канал.\n"
+        "2. Нажмите кнопку ниже.\n"
+        "3. Отправьте юзернеймы приглашённых или скриншоты.\n"
+        "4. После проверки вы получите Stars.\n\n"
+        "Можно отправить несколько сообщений подряд —\n"
+        "текст, скриншоты или всё вместе."
+    )
+    await call.message.edit_text(text, reply_markup=invite_kb(), parse_mode="HTML")
+    await call.answer()
+
+@router.callback_query(F.data == "send_invite_proof")
+async def start_invite_proof(call: types.CallbackQuery, state: FSMContext):
+    text = (
+        "Отправьте подтверждение приглашений:\n\n"
+        "• Юзернеймы приглашённых (через запятую или списком)\n"
+        "• Скриншоты подписки\n"
+        "• Или и то, и другое\n\n"
+        "Когда закончите — нажмите <b>«Готово»</b>."
+    )
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Готово ✅", callback_data="finish_invite_proof")],
+        [InlineKeyboardButton(text="Отмена", callback_data="back")],
+    ]), parse_mode="HTML")
+    await state.set_state(InviteState.waiting_for_proof)
+    await state.update_data(invite_proofs=[])
+    await call.answer()
+
+@router.message(InviteState.waiting_for_proof, F.photo)
+async def receive_invite_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    proofs = data.get("invite_proofs", [])
+    photo_id = message.photo[-1].file_id
+    caption = message.caption or ""
+    proofs.append({"type": "photo", "file_id": photo_id, "caption": caption})
+    await state.update_data(invite_proofs=proofs)
+    await message.answer(
+        f"📎 Скриншот получен (всего: {len(proofs)}).\n"
+        "Можете отправить ещё или нажмите <b>«Готово»</b>.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Готово ✅", callback_data="finish_invite_proof")],
+            [InlineKeyboardButton(text="Отмена", callback_data="back")],
+        ])
+    )
+
+@router.message(InviteState.waiting_for_proof, F.text)
+async def receive_invite_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    proofs = data.get("invite_proofs", [])
+    proofs.append({"type": "text", "content": message.text.strip()})
+    await state.update_data(invite_proofs=proofs)
+    await message.answer(
+        f"📝 Текст получен (всего: {len(proofs)}).\n"
+        "Можете отправить ещё или нажмите <b>«Готово»</b>.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Готово ✅", callback_data="finish_invite_proof")],
+            [InlineKeyboardButton(text="Отмена", callback_data="back")],
+        ])
+    )
+
+@router.callback_query(F.data == "finish_invite_proof")
+async def finish_invite_proof(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    proofs = data.get("invite_proofs", [])
+
+    if not proofs:
+        await call.answer("Вы не отправили ни одного подтверждения!", show_alert=True)
+        return
+
+    user = call.from_user
+    username = f"@{user.username}" if user.username else "нет username"
+
+    # Формируем сообщение для админа
+    admin_header = (
+        f"⭐ <b>Заявка на инвайты</b>\n\n"
+        f"Пользователь: {user.full_name}\n"
+        f"TG: {username}\n"
+        f"ID: <code>{user.id}</code>\n"
+        f"Подтверждений: {len(proofs)}\n\n"
+    )
+
+    text_proofs = []
+    photo_proofs = []
+
+    for proof in proofs:
+        if proof["type"] == "text":
+            text_proofs.append(proof["content"])
+        elif proof["type"] == "photo":
+            photo_proofs.append(proof)
+
+    if text_proofs:
+        admin_header += "<b>Юзернеймы:</b>\n"
+        for t in text_proofs:
+            admin_header += f"  • {t}\n"
+
+    # Отправляем текстовую часть
+    await notify_admins(admin_header)
+
+    # Отправляем фото отдельно
+    for p in photo_proofs:
+        caption = f"📎 Скриншот от {user.full_name} ({username})"
+        if p["caption"]:
+            caption += f"\nПодпись: {p['caption']}"
+        await notify_admins(caption, photo=p["file_id"])
+
+    await call.message.edit_text(
+        "✅ <b>Заявка отправлена!</b>\n\n"
+        "Мы проверим подтверждения и начислим Stars.\n"
+        "Обычно это занимает до 24 часов.\n\n"
+        "Спасибо за поддержку!",
+        parse_mode="HTML",
+        reply_markup=back_button()
+    )
+    await state.clear()
+    await call.answer()
+
+# ===================== INFO PAGES =====================
+
 @router.callback_query(F.data == "process")
 async def show_process(call: types.CallbackQuery):
     text = (
@@ -666,10 +810,10 @@ async def show_about(call: types.CallbackQuery):
         "<b>LUCED</b> — команда энтузиастов, которая верит в силу технологий.\n\n"
         "С 2025 года мы создаём решения, которые помогают бизнесу расти и развиваться.\n\n"
         "Наши ценности:\n"
-        "Инновации — всегда на передовой\n"
-        "Прозрачность — честные сроки и цены\n"
-        "Качество — каждый проект проходит ревью\n"
-        "Команда — сильные специалисты с общей целью\n\n"
+        "• Инновации — всегда на передовой\n"
+        "• Прозрачность — честные сроки и цены\n"
+        "• Качество — каждый проект проходит ревью\n"
+        "• Команда — сильные специалисты с общей целью\n\n"
         f"Сайт: {SITE_URL}"
     )
     await call.message.edit_text(text, reply_markup=back_button(), parse_mode="HTML")
