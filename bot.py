@@ -1,893 +1,752 @@
-import json
+# bot.py
+import asyncio
 import logging
-from pathlib import Path
-from aiogram import Bot, Dispatcher, Router, F, types
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice, PreCheckoutQuery,
+    CallbackQuery, Message
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from config import BOT_TOKEN, SITE_URL, CONTACT_EMAIL, ADMIN_IDS
 
+from config import config
+from database import db
+from games import CoinFlip, Dice, HighLow, Slots, Mines, GameResult
+from payments import star_payments, ton_payments
+
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN)
+# Инициализация
+bot = Bot(token=config.BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-router = Router()
-dp.include_router(router)
 
-# ===================== ADMIN STORAGE =====================
+# FSM States
+class GameStates(StatesGroup):
+    choosing_game = State()
+    choosing_currency = State()
+    entering_bet = State()
+    playing_coinflip = State()
+    playing_dice = State()
+    playing_highlow = State()
+    playing_slots = State()
+    playing_mines = State()
 
-ADMINS_FILE = Path(__file__).parent / "admins.json"
+class DepositStates(StatesGroup):
+    choosing_currency = State()
+    entering_amount = State()
+    waiting_payment = State()
 
+# Клавиатуры
+def main_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎮 Играть", callback_data="play")],
+        [InlineKeyboardButton(text="💰 Депозит", callback_data="deposit"),
+         InlineKeyboardButton(text="💸 Вывод", callback_data="withdraw")],
+        [InlineKeyboardButton(text="👛 Баланс", callback_data="balance"),
+         InlineKeyboardButton(text="📊 Статистика", callback_data="stats")]
+    ])
 
-def load_admins() -> list[int]:
-    ids = list(ADMIN_IDS)
-    if ADMINS_FILE.exists():
-        try:
-            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-                ids.extend(json.load(f))
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return list(set(ids))
+def games_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🪙 Монетка", callback_data="game_coinflip"),
+         InlineKeyboardButton(text="🎲 Кости", callback_data="game_dice")],
+        [InlineKeyboardButton(text="📈 High/Low", callback_data="game_highlow"),
+         InlineKeyboardButton(text="🎰 Слоты", callback_data="game_slots")],
+        [InlineKeyboardButton(text="💣 Мины", callback_data="game_mines")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")]
+    ])
 
+def currency_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Stars", callback_data="currency_stars"),
+         InlineKeyboardButton(text="💎 TON", callback_data="currency_ton")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_games")]
+    ])
 
-def save_admin(user_id: int) -> None:
-    admins = load_admins()
-    if user_id not in admins:
-        admins.append(user_id)
-    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-        json.dump(admins, f, indent=2)
+def coinflip_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌕 Орёл", callback_data="flip_heads"),
+         InlineKeyboardButton(text="🌑 Решка", callback_data="flip_tails")],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data="cancel_game")]
+    ])
 
+def dice_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=str(i), callback_data=f"dice_{i}") for i in range(1, 4)],
+        [InlineKeyboardButton(text=str(i), callback_data=f"dice_{i}") for i in range(4, 7)],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data="cancel_game")]
+    ])
 
-def remove_admin(user_id: int) -> None:
-    admins = load_admins()
-    if user_id in admins:
-        admins.remove(user_id)
-    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-        json.dump(admins, f, indent=2)
+def highlow_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Выше 50", callback_data="hl_high"),
+         InlineKeyboardButton(text="📉 Ниже 50", callback_data="hl_low")],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data="cancel_game")]
+    ])
 
+def slots_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎰 Крутить!", callback_data="spin_slots")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_games")]
+    ])
 
-async def notify_admins(text: str, photo: str = None) -> None:
-    for admin_id in load_admins():
-        try:
-            if photo:
-                await bot.send_photo(admin_id, photo=photo, caption=text, parse_mode="HTML")
+def mines_keyboard(game_state: dict):
+    revealed = set(game_state['revealed'])
+    mines = set(game_state['mines']) if game_state['game_over'] else set()
+    
+    keyboard = []
+    for row in range(5):
+        row_buttons = []
+        for col in range(5):
+            cell = row * 5 + col
+            if cell in revealed:
+                text = "💎"
+            elif cell in mines:
+                text = "💥"
             else:
-                await bot.send_message(admin_id, text, parse_mode="HTML")
-        except Exception as e:
-            logging.warning(f"Не удалось отправить админу {admin_id}: {e}")
-
-# ===================== SERVICE CATALOG =====================
-
-CATALOG = {
-    "bots": {
-        "category": "Telegram-боты",
-        "emoji": "🤖",
-        "items": [
-            {
-                "id": "bot_faq",
-                "name": "Бот-визитка / FAQ",
-                "price": 200,
-                "desc": "Простой бот с информацией о компании, контактами и FAQ",
-                "time": "1 дней",
-            },
-            {
-                "id": "bot_notify",
-                "name": "Бот уведомлений",
-                "price": 250,
-                "desc": "Автоматические уведомления, напоминания, оповещения о событиях",
-                "time": "1 дней",
-            },
-            {
-                "id": "bot_shop",
-                "name": "Бот-магазин",
-                "price": 500,
-                "desc": "Каталог товаров, корзина, оплата через Telegram Stars / ЮKassa",
-                "time": "1-2 дней",
-            },
-            {
-                "id": "bot_support",
-                "name": "Бот техподдержки",
-                "price": 750,
-                "desc": "Тикет-система, распределение заявок, чат с оператором",
-                "time": "1-3 дней",
-            },
-            {
-                "id": "bot_ai",
-                "name": "AI-ассистент",
-                "price": 1_000,
-                "desc": "Умный бот на базе LLM с базой знаний, RAG и контекстом",
-                "time": "1-3 дней",
-            },
-            {
-                "id": "bot_crm",
-                "name": "CRM-бот",
-                "price": 2_000,
-                "desc": "Управление клиентами, воронки, интеграция с Bitrix24/AmoCRM",
-                "time": "3-5 дней",
-            },
-        ],
-    },
-    "sites": {
-        "category": "Веб-сайты",
-        "emoji": "🌐",
-        "items": [
-            {
-                "id": "site_landing",
-                "name": "Лендинг",
-                "price": 1_000,
-                "desc": "Одностраничный промо-сайт с анимациями и формой заявки",
-                "time": "1-2 дней",
-            },
-            {
-                "id": "site_corp",
-                "name": "Корпоративный сайт",
-                "price": 1_000,
-                "desc": "Многостраничный сайт: главная, услуги, о нас, контакты, блог",
-                "time": "1-3 дней",
-            },
-            {
-                "id": "site_shop",
-                "name": "Интернет-магазин",
-                "price": 2_000,
-                "desc": "Каталог, корзина, оплата, личный кабинет, админ-панель",
-                "time": "2-4 дней",
-            },
-            {
-                "id": "site_saas",
-                "name": "Веб-приложение / SaaS",
-                "price": 5_000,
-                "desc": "Сложный веб-сервис с авторизацией, дашбордами, API",
-                "time": "3-6 дней",
-            },
-            {
-                "id": "site_seo",
-                "name": "SEO-оптимизация сайта",
-                "price": 1_000,
-                "desc": "Аудит, оптимизация скорости, мета-теги, структурированные данные",
-                "time": "5-10 дней",
-            },
-        ],
-    },
-    "apps": {
-        "category": "Мобильные приложения",
-        "emoji": "📱",
-        "items": [
-            {
-                "id": "app_flutter",
-                "name": "Кроссплатформенное (Flutter)",
-                "price": 5_000,
-                "desc": "Один код — iOS + Android. Быстро и экономично",
-                "time": "2-5 дней",
-            },
-            {
-                "id": "app_ios",
-                "name": "Нативное iOS",
-                "price": 3_500,
-                "desc": "Swift, SwiftUI. Максимальная производительность для Apple",
-                "time": "3-5 дней",
-            },
-            {
-                "id": "app_android",
-                "name": "Нативное Android",
-                "price": 2_000,
-                "desc": "Kotlin, Jetpack Compose. Полный доступ к возможностям Android",
-                "time": "1-3 дней",
-            },
-            {
-                "id": "app_mvp",
-                "name": "MVP приложения",
-                "price": 1_000,
-                "desc": "Минимальная рабочая версия для теста гипотезы",
-                "time": "1-3 дней",
-            },
-        ],
-    },
-    "ai": {
-        "category": "AI / ML решения",
-        "emoji": "🧠",
-        "items": [
-            {
-                "id": "ai_chatbot",
-                "name": "AI чат-бот для сайта",
-                "price": 2_000,
-                "desc": "Умный помощник на сайте с обучением на ваших данных",
-                "time": "1-3 дней",
-            },
-            {
-                "id": "ai_recs",
-                "name": "Рекомендательная система",
-                "price": 10_000,
-                "desc": "Персональные рекомендации товаров, контента, услуг",
-                "time": "4-8 дней",
-            },
-            {
-                "id": "ai_analytics",
-                "name": "Предиктивная аналитика",
-                "price": 10_500,
-                "desc": "Прогнозирование продаж, спроса, оттока клиентов",
-                "time": "1-5 дней",
-            },
-            {
-                "id": "ai_vision",
-                "name": "Компьютерное зрение",
-                "price": 5_000,
-                "desc": "Распознавание объектов, лиц, документов, OCR",
-                "time": "2-5 дней",
-            },
-        ],
-    },
-    "design": {
-        "category": "UX/UI Дизайн",
-        "emoji": "🎨",
-        "items": [
-            {
-                "id": "design_landing",
-                "name": "Дизайн лендинга",
-                "price": 1_000,
-                "desc": "Прототип + дизайн всех экранов в Figma",
-                "time": "3-5 дней",
-            },
-            {
-                "id": "design_multi",
-                "name": "Дизайн многостраничника",
-                "price": 1_890,
-                "desc": "Полный дизайн 5-10 страниц с адаптивом",
-                "time": "7-14 дней",
-            },
-            {
-                "id": "design_system",
-                "name": "Дизайн-система",
-                "price": 1_500,
-                "desc": "Компоненты, токены, гайдлайны для всей команды",
-                "time": "14-21 дней",
-            },
-            {
-                "id": "design_audit",
-                "name": "Аудит интерфейса",
-                "price": 1_000,
-                "desc": "Анализ UX, рекомендации по улучшению, отчёт",
-                "time": "3-7 дней",
-            },
-        ],
-    },
-    "devops": {
-        "category": "DevOps / Cloud",
-        "emoji": "☁️",
-        "items": [
-            {
-                "id": "devops_setup",
-                "name": "Настройка инфраструктуры",
-                "price": 400,
-                "desc": "Серверы, CI/CD, Docker, мониторинг",
-                "time": "5-10 дней",
-            },
-            {
-                "id": "devops_migrate",
-                "name": "Миграция в облако",
-                "price": 700,
-                "desc": "Переезд на AWS/GCP/Azure без простоя",
-                "time": "7-14 дней",
-            },
-            {
-                "id": "devops_audit",
-                "name": "Аудит инфраструктуры",
-                "price": 300,
-                "desc": "Оценка безопасности, производительности, стоимости",
-                "time": "3-5 дней",
-            },
-        ],
-    },
-    "consult": {
-        "category": "IT-консалтинг",
-        "emoji": "💼",
-        "items": [
-            {
-                "id": "consult_hour",
-                "name": "Консультация (1 час)",
-                "price": 500,
-                "desc": "Онлайн-встреча, обсуждение задачи, рекомендации",
-                "time": "1 час",
-            },
-            {
-                "id": "consult_pack5",
-                "name": "Пакет консультаций (5 часов)",
-                "price": 2_000,
-                "desc": "5 часов консультаций + письменный отчёт",
-                "time": "гибко",
-            },
-            {
-                "id": "consult_cto",
-                "name": "Fractional CTO",
-                "price": 5_500,
-                "desc": "Технический директор на аутсорсе — стратегия, архитектура, контроль",
-                "time": "от 1 месяца",
-            },
-        ],
-    },
-    "support": {
-        "category": "Поддержка и сопровождение",
-        "emoji": "🛡️",
-        "items": [
-            {
-                "id": "support_basic",
-                "name": "Базовая поддержка",
-                "price": 15_150,
-                "desc": "Мониторинг, бэкапы, обновления (1 проект/мес)",
-                "time": "ежемесячно",
-            },
-            {
-                "id": "support_pro",
-                "name": "Про поддержка",
-                "price": 20_000,
-                "desc": "Базовая + мелкие доработки до 10 часов/мес",
-                "time": "ежемесячно",
-            },
-            {
-                "id": "support_enterprise",
-                "name": "Enterprise",
-                "price": 5_000,
-                "desc": "Про + выделенный инженер, SLA, приоритетная поддержка",
-                "time": "ежемесячно",
-            },
-        ],
-    },
-}
-
-# Lookup: item_id -> (category_key, item)
-ITEMS_BY_ID = {}
-for cat_key, cat_data in CATALOG.items():
-    for item in cat_data["items"]:
-        ITEMS_BY_ID[item["id"]] = (cat_key, item)
-
-
-def fmt_price(price: int) -> str:
-    return f"{price:,}".replace(",", " ")
-
-# ===================== KEYBOARDS =====================
-
-def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Каталог услуг", callback_data="services")],
-        [InlineKeyboardButton(text="Корзина", callback_data="cart")],
-        [InlineKeyboardButton(text="Инвайты ⭐", callback_data="invites")],
-        [InlineKeyboardButton(text="Как мы работаем", callback_data="process")],
-        [InlineKeyboardButton(text="О нас", callback_data="about")],
-        [InlineKeyboardButton(text="Контакты", callback_data="contact")],
-    ])
-
-def categories_kb():
-    rows = []
-    for cat_key, cat_data in CATALOG.items():
-        rows.append([InlineKeyboardButton(
-            text=f"{cat_data['emoji']} {cat_data['category']}",
-            callback_data=f"cat:{cat_key}"
-        )])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def items_kb(cat_key: str):
-    cat = CATALOG[cat_key]
-    rows = []
-    for item in cat["items"]:
-        rows.append([InlineKeyboardButton(
-            text=f"{item['name']} — {fmt_price(item['price'])} ₽",
-            callback_data=f"item:{item['id']}"
-        )])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="services")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def item_detail_kb(item_id: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Добавить в корзину", callback_data=f"add_cart:{item_id}")],
-        [InlineKeyboardButton(text="Назад", callback_data=f"cat:{ITEMS_BY_ID[item_id][0]}")],
-    ])
-
-def cart_kb(cart_items: list[dict]):
-    rows = []
-    for i, item in enumerate(cart_items):
-        rows.append([InlineKeyboardButton(
-            text=f"Удалить  {item['name']}",
-            callback_data=f"remove_cart:{i}"
-        )])
-    rows.append([InlineKeyboardButton(text="Очистить корзину", callback_data="clear_cart")])
-    rows.append([
-        InlineKeyboardButton(text="Оформить заявку", callback_data="checkout"),
-    ])
-    rows.append([InlineKeyboardButton(text="Продолжить покупки", callback_data="services")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def back_button(cb="back"):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data=cb)],
-    ])
-
-def process_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оставить заявку", callback_data="contact")],
-        [InlineKeyboardButton(text="Назад", callback_data="back")],
-    ])
-
-def invite_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Отправить подтверждение", callback_data="send_invite_proof")],
-        [InlineKeyboardButton(text="Назад", callback_data="back")],
-    ])
-
-# ===================== FSM =====================
-
-class OrderState(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_contact = State()
-    waiting_for_details = State()
-
-class AdminState(StatesGroup):
-    waiting_for_admin_id = State()
-
-class InviteState(StatesGroup):
-    waiting_for_proof = State()
-
-# ===================== CART HELPERS =====================
-
-def load_cart(user_id: int) -> list[dict]:
-    cart_file = Path(__file__).parent / "carts" / f"{user_id}.json"
-    if cart_file.exists():
-        try:
-            with open(cart_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return []
-
-
-def save_cart(user_id: int, cart: list[dict]) -> None:
-    cart_dir = Path(__file__).parent / "carts"
-    cart_dir.mkdir(exist_ok=True)
-    cart_file = cart_dir / f"{user_id}.json"
-    with open(cart_file, "w", encoding="utf-8") as f:
-        json.dump(cart, f, indent=2, ensure_ascii=False)
-
-
-def add_to_cart(user_id: int, item_id: str) -> bool:
-    if item_id not in ITEMS_BY_ID:
-        return False
-    cat_key, item = ITEMS_BY_ID[item_id]
-    cart = load_cart(user_id)
-    cart.append({
-        "id": item_id,
-        "name": item["name"],
-        "price": item["price"],
-        "time": item["time"],
-    })
-    save_cart(user_id, cart)
-    return True
-
-
-def remove_from_cart(user_id: int, index: int) -> bool:
-    cart = load_cart(user_id)
-    if 0 <= index < len(cart):
-        cart.pop(index)
-        save_cart(user_id, cart)
-        return True
-    return False
-
-
-def clear_cart(user_id: int) -> None:
-    save_cart(user_id, [])
-
-
-def cart_total(user_id: int) -> int:
-    cart = load_cart(user_id)
-    return sum(i["price"] for i in cart)
-
-
-def cart_text(user_id: int) -> str:
-    cart = load_cart(user_id)
-    if not cart:
-        return "Корзина пуста"
-    lines = ["<b>Ваша корзина:</b>\n"]
-    for i, item in enumerate(cart, 1):
-        lines.append(f"{i}. {item['name']} — <b>{fmt_price(item['price'])} ₽</b>")
-    lines.append(f"\n<b>Итого: {fmt_price(cart_total(user_id))} ₽</b>")
-    return "\n".join(lines)
-
-# ===================== HANDLERS =====================
-
-@router.message(F.text == "/start")
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    text = (
-        "Добро пожаловать в <b>LUCED</b>!\n\n"
-        "С 2025 года мы создаём технологические решения:\n"
-        "ботов, сайты, мобильные приложения и AI-системы\n\n"
-        "Выберите раздел:"
-    )
-    await message.answer(text, reply_markup=main_menu(), parse_mode="HTML")
-
-@router.message(F.text == "/cart")
-@router.callback_query(F.data == "cart")
-async def show_cart(call: types.CallbackQuery | types.Message):
-    user_id = call.from_user.id
-    text = cart_text(user_id)
-    items = load_cart(user_id)
-    kb = cart_kb(items) if items else back_button("services")
-    if isinstance(call, types.CallbackQuery):
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        await call.answer()
-    else:
-        await call.answer(text, reply_markup=kb, parse_mode="HTML")
-
-@router.callback_query(F.data == "services")
-async def show_services(call: types.CallbackQuery):
-    text = "Выберите категорию услуг:"
-    await call.message.edit_text(text, reply_markup=categories_kb())
-    await call.answer()
-
-@router.callback_query(F.data.startswith("cat:"))
-async def show_category(call: types.CallbackQuery):
-    cat_key = call.data.split(":", 1)[1]
-    cat = CATALOG.get(cat_key)
-    if not cat:
-        await call.answer()
-        return
-    text = f"<b>{cat['emoji']} {cat['category']}</b>\n\nВыберите услугу:"
-    await call.message.edit_text(text, reply_markup=items_kb(cat_key), parse_mode="HTML")
-    await call.answer()
-
-@router.callback_query(F.data.startswith("item:"))
-async def show_item(call: types.CallbackQuery):
-    item_id = call.data.split(":", 1)[1]
-    result = ITEMS_BY_ID.get(item_id)
-    if not result:
-        await call.answer()
-        return
-    cat_key, item = result
-    text = (
-        f"<b>{item['name']}</b>\n\n"
-        f"{item['desc']}\n\n"
-        f"Стоимость: <b>{fmt_price(item['price'])} ₽</b>\n"
-        f"Срок: {item['time']}"
-    )
-    await call.message.edit_text(text, reply_markup=item_detail_kb(item_id), parse_mode="HTML")
-    await call.answer()
-
-@router.callback_query(F.data.startswith("add_cart:"))
-async def handle_add_cart(call: types.CallbackQuery):
-    item_id = call.data.split(":", 1)[1]
-    result = ITEMS_BY_ID.get(item_id)
-    if not result:
-        await call.answer()
-        return
-    cat_key, item = result
-    cat = CATALOG[cat_key]
-    add_to_cart(call.from_user.id, item_id)
-    total = cart_total(call.from_user.id)
-    await call.answer(f"Добавлено: {item['name']}", show_alert=False)
-    text = (
-        f"Добавлено: <b>{item['name']}</b> — {fmt_price(item['price'])} ₽\n\n"
-        f"В корзине товаров на <b>{fmt_price(total)} ₽</b>"
-    )
-    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть корзину", callback_data="cart")],
-        [InlineKeyboardButton(text=f"Назад к {cat['category']}", callback_data=f"cat:{cat_key}")],
-    ]), parse_mode="HTML")
-
-@router.callback_query(F.data == "checkout")
-async def start_checkout(call: types.CallbackQuery, state: FSMContext):
-    text = cart_text(call.from_user.id)
-    text += (
-        "\n\nДля оформления заявки укажите:\n\n"
-        "1. Ваше имя или название компании\n"
-        "2. Контакт для связи (@username, телефон, email)\n"
-        "3. Комментарии к заказу\n\n"
-        "Начнём с имени:"
-    )
-    await call.message.edit_text(text, reply_markup=back_button("cart"), parse_mode="HTML")
-    await call.answer()
-    await state.set_state(OrderState.waiting_for_name)
-
-@router.message(OrderState.waiting_for_name)
-async def get_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
-    await message.answer(
-        f"Спасибо! Теперь укажите контакт для связи\n"
-        f"(@username, телефон или email):",
-        parse_mode="HTML"
-    )
-    await state.set_state(OrderState.waiting_for_contact)
-
-@router.message(OrderState.waiting_for_contact)
-async def get_contact(message: types.Message, state: FSMContext):
-    await state.update_data(contact=message.text.strip())
-    await message.answer(
-        "Есть комментарии или пожелания к заказу?\n"
-        "Напишите что угодно или отправьте «—» если нет:"
-    )
-    await state.set_state(OrderState.waiting_for_details)
-
-@router.message(OrderState.waiting_for_details)
-async def get_details(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    name = data.get("name", "Не указано")
-    contact = data.get("contact", "Не указан")
-    details = message.text.strip() if message.text.strip() != "—" else "Без комментариев"
-    cart = load_cart(message.from_user.id)
-    total = sum(i["price"] for i in cart)
-
-    items_list = "\n".join(
-        f"  • {i['name']} — {fmt_price(i['price'])} ₽ ({i['time']})"
-        for i in cart
-    )
-
-    admin_msg = (
-        f"📦 <b>Новый заказ!</b>\n\n"
-        f"Клиент: {name}\n"
-        f"Контакт: {contact}\n"
-        f"TG: @{message.from_user.username or 'нет'}\n"
-        f"ID: <code>{message.from_user.id}</code>\n\n"
-        f"<b>Состав заказа:</b>\n{items_list}\n\n"
-        f"<b>Итого: {fmt_price(total)} ₽</b>\n\n"
-        f"Комментарий: {details}"
-    )
-
-    user_msg = (
-        f"Спасибо, <b>{name}</b>! Ваш заказ принят.\n\n"
-        f"Позиций: {len(cart)}\n"
-        f"Сумма: <b>{fmt_price(total)} ₽</b>\n\n"
-        f"Мы свяжемся с вами в ближайшее время для обсуждения деталей.\n\n"
-        f"Сайт: {SITE_URL}\n"
-        f"Email: {CONTACT_EMAIL}"
-    )
-
-    await message.answer(user_msg, parse_mode="HTML", reply_markup=back_button())
-    clear_cart(message.from_user.id)
-    await state.clear()
-    await notify_admins(admin_msg)
-
-@router.callback_query(F.data.startswith("remove_cart:"))
-async def handle_remove_cart(call: types.CallbackQuery):
-    index = int(call.data.split(":", 1)[1])
-    remove_from_cart(call.from_user.id, index)
-    items = load_cart(call.from_user.id)
-    text = cart_text(call.from_user.id)
-    kb = cart_kb(items) if items else back_button("services")
-    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    await call.answer("Удалено из корзины")
-
-@router.callback_query(F.data == "clear_cart")
-async def handle_clear_cart(call: types.CallbackQuery):
-    clear_cart(call.from_user.id)
-    await call.message.edit_text("Корзина очищена", reply_markup=back_button("services"))
-    await call.answer()
-
-# ===================== INVITES =====================
-
-@router.callback_query(F.data == "invites")
-async def show_invites(call: types.CallbackQuery):
-    text = (
-        "<b>⭐ Программа инвайтов</b>\n\n"
-        "Пригласите <b>5 человек</b> в наш канал и получите "
-        "<b>50 Telegram Stars</b> в качестве награды.\n\n"
-        "<b>Как это работает:</b>\n"
-        "1. Пригласите 5 друзей в канал.\n"
-        "2. Нажмите кнопку ниже.\n"
-        "3. Отправьте юзернеймы приглашённых или скриншоты.\n"
-        "4. После проверки вы получите Stars.\n\n"
-        "Можно отправить несколько сообщений подряд —\n"
-        "текст, скриншоты или всё вместе."
-    )
-    await call.message.edit_text(text, reply_markup=invite_kb(), parse_mode="HTML")
-    await call.answer()
-
-@router.callback_query(F.data == "send_invite_proof")
-async def start_invite_proof(call: types.CallbackQuery, state: FSMContext):
-    text = (
-        "Отправьте подтверждение приглашений:\n\n"
-        "• Юзернеймы приглашённых (через запятую или списком)\n"
-        "• Скриншоты подписки\n"
-        "• Или и то, и другое\n\n"
-        "Когда закончите — нажмите <b>«Готово»</b>."
-    )
-    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Готово ✅", callback_data="finish_invite_proof")],
-        [InlineKeyboardButton(text="Отмена", callback_data="back")],
-    ]), parse_mode="HTML")
-    await state.set_state(InviteState.waiting_for_proof)
-    await state.update_data(invite_proofs=[])
-    await call.answer()
-
-@router.message(InviteState.waiting_for_proof, F.photo)
-async def receive_invite_photo(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    proofs = data.get("invite_proofs", [])
-    photo_id = message.photo[-1].file_id
-    caption = message.caption or ""
-    proofs.append({"type": "photo", "file_id": photo_id, "caption": caption})
-    await state.update_data(invite_proofs=proofs)
-    await message.answer(
-        f"📎 Скриншот получен (всего: {len(proofs)}).\n"
-        "Можете отправить ещё или нажмите <b>«Готово»</b>.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Готово ✅", callback_data="finish_invite_proof")],
-            [InlineKeyboardButton(text="Отмена", callback_data="back")],
-        ])
-    )
-
-@router.message(InviteState.waiting_for_proof, F.text)
-async def receive_invite_text(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    proofs = data.get("invite_proofs", [])
-    proofs.append({"type": "text", "content": message.text.strip()})
-    await state.update_data(invite_proofs=proofs)
-    await message.answer(
-        f"📝 Текст получен (всего: {len(proofs)}).\n"
-        "Можете отправить ещё или нажмите <b>«Готово»</b>.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Готово ✅", callback_data="finish_invite_proof")],
-            [InlineKeyboardButton(text="Отмена", callback_data="back")],
-        ])
-    )
-
-@router.callback_query(F.data == "finish_invite_proof")
-async def finish_invite_proof(call: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    proofs = data.get("invite_proofs", [])
-
-    if not proofs:
-        await call.answer("Вы не отправили ни одного подтверждения!", show_alert=True)
-        return
-
-    user = call.from_user
-    username = f"@{user.username}" if user.username else "нет username"
-
-    # Формируем сообщение для админа
-    admin_header = (
-        f"⭐ <b>Заявка на инвайты</b>\n\n"
-        f"Пользователь: {user.full_name}\n"
-        f"TG: {username}\n"
-        f"ID: <code>{user.id}</code>\n"
-        f"Подтверждений: {len(proofs)}\n\n"
-    )
-
-    text_proofs = []
-    photo_proofs = []
-
-    for proof in proofs:
-        if proof["type"] == "text":
-            text_proofs.append(proof["content"])
-        elif proof["type"] == "photo":
-            photo_proofs.append(proof)
-
-    if text_proofs:
-        admin_header += "<b>Юзернеймы:</b>\n"
-        for t in text_proofs:
-            admin_header += f"  • {t}\n"
-
-    # Отправляем текстовую часть
-    await notify_admins(admin_header)
-
-    # Отправляем фото отдельно
-    for p in photo_proofs:
-        caption = f"📎 Скриншот от {user.full_name} ({username})"
-        if p["caption"]:
-            caption += f"\nПодпись: {p['caption']}"
-        await notify_admins(caption, photo=p["file_id"])
-
-    await call.message.edit_text(
-        "✅ <b>Заявка отправлена!</b>\n\n"
-        "Мы проверим подтверждения и начислим Stars.\n"
-        "Обычно это занимает до 24 часов.\n\n"
-        "Спасибо за поддержку!",
-        parse_mode="HTML",
-        reply_markup=back_button()
-    )
-    await state.clear()
-    await call.answer()
-
-# ===================== INFO PAGES =====================
-
-@router.callback_query(F.data == "process")
-async def show_process(call: types.CallbackQuery):
-    text = (
-        "<b>Как мы работаем</b>\n\n"
-        "1. <b>Анализ</b> — изучаем бизнес, рынок и конкурентов\n\n"
-        "2. <b>Дизайн</b> — создаём прототипы и макеты\n\n"
-        "3. <b>Разработка</b> — пишем чистый код с тестами\n\n"
-        "4. <b>Запуск</b> — деплой, мониторинг и поддержка\n\n"
-        "Каждый этап сопровождается отчётами и согласованием."
-    )
-    await call.message.edit_text(text, reply_markup=process_kb(), parse_mode="HTML")
-    await call.answer()
-
-@router.callback_query(F.data == "about")
-async def show_about(call: types.CallbackQuery):
-    text = (
-        "<b>LUCED</b> — команда энтузиастов, которая верит в силу технологий.\n\n"
-        "С 2025 года мы создаём решения, которые помогают бизнесу расти и развиваться.\n\n"
-        "Наши ценности:\n"
-        "• Инновации — всегда на передовой\n"
-        "• Прозрачность — честные сроки и цены\n"
-        "• Качество — каждый проект проходит ревью\n"
-        "• Команда — сильные специалисты с общей целью\n\n"
-        f"Сайт: {SITE_URL}"
-    )
-    await call.message.edit_text(text, reply_markup=back_button(), parse_mode="HTML")
-    await call.answer()
-
-@router.callback_query(F.data == "contact")
-async def show_contact(call: types.CallbackQuery):
-    text = (
-        "<b>Свяжитесь с нами</b>\n\n"
-        f"Email: {CONTACT_EMAIL}\n"
-        f"Сайт: {SITE_URL}\n\n"
-        "Или соберите корзину и оформите заявку прямо в боте."
-    )
-    await call.message.edit_text(text, reply_markup=back_button(), parse_mode="HTML")
-    await call.answer()
-
-@router.callback_query(F.data == "back")
-async def go_back(call: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = "Главное меню:"
-    await call.message.edit_text(text, reply_markup=main_menu())
-    await call.answer()
-
-# ===================== ADMIN COMMANDS =====================
-
-@router.message(F.text == "/admin")
-async def cmd_admin(message: types.Message):
-    user_id = message.from_user.id
-    admins = load_admins()
-    if user_id in admins:
-        await message.answer("Вы уже зарегистрированы как владелец.")
-        return
-    save_admin(user_id)
-    await message.answer(
-        f"Вы зарегистрированы как владелец бота!\n"
-        f"Ваш ID: <code>{user_id}</code>\n\n"
-        f"Теперь все заказы будут приходить вам.",
-        parse_mode="HTML"
-    )
-    for admin_id in [a for a in admins if a != user_id]:
-        try:
-            await bot.send_message(
-                admin_id,
-                f"Новый владелец: {message.from_user.full_name} (ID: <code>{user_id}</code>)",
-                parse_mode="HTML"
+                text = "⬜"
+            row_buttons.append(
+                InlineKeyboardButton(text=text, callback_data=f"mine_{cell}")
             )
-        except Exception:
-            pass
+        keyboard.append(row_buttons)
+    
+    keyboard.append([
+        InlineKeyboardButton(text=f"💰 Забрать (x{game_state['multiplier']})", 
+                            callback_data="mines_cashout"),
+        InlineKeyboardButton(text="◀️ Отмена", callback_data="cancel_game")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-@router.message(F.text == "/admin_remove")
-async def cmd_admin_remove(message: types.Message):
+# Handlers
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
     user_id = message.from_user.id
-    if user_id not in load_admins():
-        await message.answer("Вы не зарегистрированы как владелец.")
+    username = message.from_user.username
+    
+    db.create_user(user_id, username)
+    
+    await message.answer(
+        f"🎰 *Добро пожаловать в Game Bot!*\n\n"
+        f"Здесь вы можете играть в азартные игры на:\n"
+        f"⭐ Telegram Stars\n"
+        f"💎 TON\n\n"
+        f"Выберите действие:",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard()
+    )
+
+@dp.callback_query(F.data == "balance")
+async def show_balance(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    
+    if not user:
+        db.create_user(user_id)
+        user = db.get_user(user_id)
+    
+    await callback.message.edit_text(
+        f"👛 *Ваш баланс:*\n\n"
+        f"⭐ Stars: *{user['stars_balance']}*\n"
+        f"💎 TON: *{user['ton_balance']:.2f}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")]
+        ])
+    )
+
+@dp.callback_query(F.data == "stats")
+async def show_stats(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Статистика недоступна")
         return
-    remove_admin(user_id)
-    await message.answer("Вы удалены из списка владельцев.")
+    
+    win_rate = (user['total_wins'] / user['total_games'] * 100) if user['total_games'] > 0 else 0
+    
+    await callback.message.edit_text(
+        f"📊 *Ваша статистика:*\n\n"
+        f"🎮 Всего игр: *{user['total_games']}*\n"
+        f"🏆 Побед: *{user['total_wins']}*\n"
+        f"📈 Винрейт: *{win_rate:.1f}%*\n\n"
+        f"💰 Поставлено Stars: *{user['total_wagered_stars']}*\n"
+        f"💎 Поставлено TON: *{user['total_wagered_ton']:.2f}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")]
+        ])
+    )
 
-@router.message(F.text == "/admins")
-async def cmd_admins_list(message: types.Message):
-    admins = load_admins()
-    if not admins:
-        await message.answer("Владельцев пока нет. Отправьте /admin чтобы стать владельцем.")
+@dp.callback_query(F.data == "play")
+async def choose_game(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(GameStates.choosing_game)
+    await callback.message.edit_text(
+        "🎮 *Выберите игру:*\n\n"
+        "🪙 *Монетка* - угадай сторону (x1.9)\n"
+        "🎲 *Кости* - угадай число (x5.7)\n"
+        "📈 *High/Low* - выше или ниже 50 (x1.9)\n"
+        "🎰 *Слоты* - классические слоты (до x50)\n"
+        "💣 *Мины* - открывай безопасные ячейки",
+        parse_mode="Markdown",
+        reply_markup=games_keyboard()
+    )
+
+@dp.callback_query(F.data.startswith("game_"))
+async def select_game(callback: CallbackQuery, state: FSMContext):
+    game = callback.data.replace("game_", "")
+    await state.update_data(selected_game=game)
+    await state.set_state(GameStates.choosing_currency)
+    
+    await callback.message.edit_text(
+        "💰 *Выберите валюту для ставки:*",
+        parse_mode="Markdown",
+        reply_markup=currency_keyboard()
+    )
+
+@dp.callback_query(F.data.startswith("currency_"))
+async def select_currency(callback: CallbackQuery, state: FSMContext):
+    currency = callback.data.replace("currency_", "")
+    await state.update_data(currency=currency)
+    await state.set_state(GameStates.entering_bet)
+    
+    user_id = callback.from_user.id
+    balance = db.get_balance(user_id, currency)
+    
+    currency_symbol = "⭐" if currency == "stars" else "💎"
+    min_bet = config.MIN_BET_STARS if currency == "stars" else config.MIN_BET_TON
+    max_bet = config.MAX_BET_STARS if currency == "stars" else config.MAX_BET_TON
+    
+    await callback.message.edit_text(
+        f"💰 *Введите сумму ставки*\n\n"
+        f"Ваш баланс: {currency_symbol} *{balance}*\n"
+        f"Мин. ставка: {min_bet}\n"
+        f"Макс. ставка: {max_bet}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="cancel_game")]
+        ])
+    )
+
+@dp.message(GameStates.entering_bet)
+async def process_bet(message: Message, state: FSMContext):
+    try:
+        bet = float(message.text.replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Введите корректное число")
         return
-    text = "Владельцы бота:\n\n" + "\n".join(f"• <code>{aid}</code>" for aid in admins)
-    await message.answer(text, parse_mode="HTML")
+    
+    data = await state.get_data()
+    currency = data['currency']
+    game = data['selected_game']
+    user_id = message.from_user.id
+    
+    # Проверки
+    min_bet = config.MIN_BET_STARS if currency == "stars" else config.MIN_BET_TON
+    max_bet = config.MAX_BET_STARS if currency == "stars" else config.MAX_BET_TON
+    balance = db.get_balance(user_id, currency)
+    
+    if bet < min_bet:
+        await message.answer(f"❌ Минимальная ставка: {min_bet}")
+        return
+    
+    if bet > max_bet:
+        await message.answer(f"❌ Максимальная ставка: {max_bet}")
+        return
+    
+    if bet > balance:
+        await message.answer(f"❌ Недостаточно средств. Баланс: {balance}")
+        return
+    
+    await state.update_data(bet=bet)
+    
+    # Показываем интерфейс игры
+    if game == "coinflip":
+        await state.set_state(GameStates.playing_coinflip)
+        await message.answer(
+            f"🪙 *Монетка*\n\n"
+            f"Ставка: *{bet}* {'⭐' if currency == 'stars' else '💎'}\n"
+            f"Выигрыш: *x1.9*\n\n"
+            f"Выберите сторону:",
+            parse_mode="Markdown",
+            reply_markup=coinflip_keyboard()
+        )
+    
+    elif game == "dice":
+        await state.set_state(GameStates.playing_dice)
+        await message.answer(
+            f"🎲 *Кости*\n\n"
+            f"Ставка: *{bet}* {'⭐' if currency == 'stars' else '💎'}\n"
+            f"Выигрыш: *x5.7*\n\n"
+            f"Выберите число от 1 до 6:",
+            parse_mode="Markdown",
+            reply_markup=dice_keyboard()
+        )
+    
+    elif game == "highlow":
+        await state.set_state(GameStates.playing_highlow)
+        await message.answer(
+            f"📈 *High/Low*\n\n"
+            f"Ставка: *{bet}* {'⭐' if currency == 'stars' else '💎'}\n"
+            f"Выигрыш: *x1.9*\n\n"
+            f"Будет число выше или ниже 50?",
+            parse_mode="Markdown",
+            reply_markup=highlow_keyboard()
+        )
+    
+    elif game == "slots":
+        await state.set_state(GameStates.playing_slots)
+        await message.answer(
+            f"🎰 *Слоты*\n\n"
+            f"Ставка: *{bet}* {'⭐' if currency == 'stars' else '💎'}\n\n"
+            f"Выигрыши:\n"
+            f"🍒 - x2 | 🍋 - x3 | 🍊 - x4\n"
+            f"🍇 - x5 | ⭐ - x10 | 💎 - x25 | 7️⃣ - x50",
+            parse_mode="Markdown",
+            reply_markup=slots_keyboard()
+        )
+    
+    elif game == "mines":
+        game_state = Mines.create_game(num_mines=5)
+        await state.update_data(mines_game=game_state)
+        await state.set_state(GameStates.playing_mines)
+        await message.answer(
+            f"💣 *Мины*\n\n"
+            f"Ставка: *{bet}* {'⭐' if currency == 'stars' else '💎'}\n"
+            f"Мин на поле: *5*\n\n"
+            f"Открывайте ячейки и избегайте мин!\n"
+            f"Можете забрать выигрыш в любой момент.",
+            parse_mode="Markdown",
+            reply_markup=mines_keyboard(game_state)
+        )
 
-# ===================== RUN =====================
+# Обработчики игр
+@dp.callback_query(GameStates.playing_coinflip, F.data.startswith("flip_"))
+async def play_coinflip(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data.replace("flip_", "")
+    data = await state.get_data()
+    bet = data['bet']
+    currency = data['currency']
+    user_id = callback.from_user.id
+    
+    # Списываем ставку
+    db.update_balance(user_id, currency, -bet)
+    
+    # Играем
+    outcome = CoinFlip.play(bet, choice)
+    
+    # Начисляем выигрыш
+    if outcome.result == GameResult.WIN:
+        db.update_balance(user_id, currency, outcome.win_amount)
+    
+    # Записываем в историю
+    db.add_game_record(
+        user_id, 'coinflip', bet, currency,
+        outcome.result.value, outcome.win_amount, outcome.game_data
+    )
+    
+    # Формируем ответ
+    result_emoji = "🌕 Орёл" if outcome.game_data['result'] == 'heads' else "🌑 Решка"
+    
+    if outcome.result == GameResult.WIN:
+        text = (
+            f"🎉 *ПОБЕДА!*\n\n"
+            f"Выпало: {result_emoji}\n"
+            f"Ваш выбор: {'🌕 Орёл' if choice == 'heads' else '🌑 Решка'}\n\n"
+            f"💰 Выигрыш: *{outcome.win_amount:.2f}* {'⭐' if currency == 'stars' else '💎'}"
+        )
+    else:
+        text = (
+            f"😔 *Проигрыш*\n\n"
+            f"Выпало: {result_emoji}\n"
+            f"Ваш выбор: {'🌕 Орёл' if choice == 'heads' else '🌑 Решка'}"
+        )
+    
+    await state.clear()
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Играть снова", callback_data="game_coinflip")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+        ])
+    )
 
+@dp.callback_query(GameStates.playing_dice, F.data.startswith("dice_"))
+async def play_dice(callback: CallbackQuery, state: FSMContext):
+    guess = int(callback.data.replace("dice_", ""))
+    data = await state.get_data()
+    bet = data['bet']
+    currency = data['currency']
+    user_id = callback.from_user.id
+    
+    db.update_balance(user_id, currency, -bet)
+    outcome = Dice.play(bet, guess)
+    
+    if outcome.result == GameResult.WIN:
+        db.update_balance(user_id, currency, outcome.win_amount)
+    
+    db.add_game_record(
+        user_id, 'dice', bet, currency,
+        outcome.result.value, outcome.win_amount, outcome.game_data
+    )
+    
+    dice_emojis = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅']
+    result = outcome.game_data['result']
+    
+    if outcome.result == GameResult.WIN:
+        text = (
+            f"🎉 *ПОБЕДА!*\n\n"
+            f"🎲 Выпало: {dice_emojis[result]} ({result})\n"
+            f"Ваш выбор: {guess}\n\n"
+            f"💰 Выигрыш: *{outcome.win_amount:.2f}* {'⭐' if currency == 'stars' else '💎'}"
+        )
+    else:
+        text = (
+            f"😔 *Проигрыш*\n\n"
+            f"🎲 Выпало: {dice_emojis[result]} ({result})\n"
+            f"Ваш выбор: {guess}"
+        )
+    
+    await state.clear()
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Играть снова", callback_data="game_dice")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+        ])
+    )
+
+@dp.callback_query(GameStates.playing_highlow, F.data.startswith("hl_"))
+async def play_highlow(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data.replace("hl_", "")
+    data = await state.get_data()
+    bet = data['bet']
+    currency = data['currency']
+    user_id = callback.from_user.id
+    
+    db.update_balance(user_id, currency, -bet)
+    outcome = HighLow.play(bet, choice)
+    
+    if outcome.result in [GameResult.WIN, GameResult.DRAW]:
+        db.update_balance(user_id, currency, outcome.win_amount)
+    
+    db.add_game_record(
+        user_id, 'highlow', bet, currency,
+        outcome.result.value, outcome.win_amount, outcome.game_data
+    )
+    
+    number = outcome.game_data['number']
+    
+    if outcome.result == GameResult.WIN:
+        text = (
+            f"🎉 *ПОБЕДА!*\n\n"
+            f"Число: *{number}*\n"
+            f"Ваш выбор: {'📈 Выше' if choice == 'high' else '📉 Ниже'} 50\n\n"
+            f"💰 Выигрыш: *{outcome.win_amount:.2f}* {'⭐' if currency == 'stars' else '💎'}"
+        )
+    elif outcome.result == GameResult.DRAW:
+        text = (
+            f"🤝 *Ничья!*\n\n"
+            f"Число: *{number}* (ровно 50)\n\n"
+            f"↩️ Ставка возвращена"
+        )
+    else:
+        text = (
+            f"😔 *Проигрыш*\n\n"
+            f"Число: *{number}*\n"
+            f"Ваш выбор: {'📈 Выше' if choice == 'high' else '📉 Ниже'} 50"
+        )
+    
+    await state.clear()
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Играть снова", callback_data="game_highlow")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+        ])
+    )
+
+@dp.callback_query(GameStates.playing_slots, F.data == "spin_slots")
+async def play_slots(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    bet = data['bet']
+    currency = data['currency']
+    user_id = callback.from_user.id
+    
+    db.update_balance(user_id, currency, -bet)
+    outcome = Slots.play(bet)
+    
+    if outcome.result == GameResult.WIN:
+        db.update_balance(user_id, currency, outcome.win_amount)
+    
+    db.add_game_record(
+        user_id, 'slots', bet, currency,
+        outcome.result.value, outcome.win_amount, outcome.game_data
+    )
+    
+    grid_display = outcome.game_data['display']
+    
+    if outcome.result == GameResult.WIN:
+        wins_text = "\n".join([f"{w[0]} x{w[1]}" for w in outcome.game_data['wins']])
+        text = (
+            f"🎰 *СЛОТЫ*\n\n"
+            f"```\n{grid_display}\n```\n\n"
+            f"🎉 *ПОБЕДА!*\n"
+            f"Линии: {wins_text}\n\n"
+            f"💰 Выигрыш: *{outcome.win_amount:.2f}* {'⭐' if currency == 'stars' else '💎'}"
+        )
+    else:
+        text = (
+            f"🎰 *СЛОТЫ*\n\n"
+            f"```\n{grid_display}\n```\n\n"
+            f"😔 *Нет выигрышных линий*"
+        )
+    
+    await state.clear()
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Крутить снова", callback_data="game_slots")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+        ])
+    )
+
+@dp.callback_query(GameStates.playing_mines, F.data.startswith("mine_"))
+async def reveal_mine_cell(callback: CallbackQuery, state: FSMContext):
+    cell = int(callback.data.replace("mine_", ""))
+    data = await state.get_data()
+    game_state = data['mines_game']
+    bet = data['bet']
+    currency = data['currency']
+    user_id = callback.from_user.id
+    
+    if game_state['game_over'] or cell in game_state['revealed']:
+        await callback.answer("Ячейка уже открыта или игра окончена")
+        return
+    
+    is_safe, multiplier = Mines.reveal_cell(game_state, cell)
+    
+    if is_safe:
+        await state.update_data(mines_game=game_state)
+        await callback.message.edit_reply_markup(reply_markup=mines_keyboard(game_state))
+        await callback.answer(f"💎 Безопасно! Множитель: x{multiplier}")
+    else:
+        # Проигрыш - списываем ставку
+        db.update_balance(user_id, currency, -bet)
+        db.add_game_record(
+            user_id, 'mines', bet, currency,
+            'lose', 0, game_state
+        )
+        
+        await state.clear()
+        await callback.message.edit_text(
+            f"💥 *БУМ! Вы попали на мину!*\n\n"
+            f"Проигрыш: *{bet}* {'⭐' if currency == 'stars' else '💎'}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Играть снова", callback_data="game_mines")],
+                [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+            ])
+        )
+
+@dp.callback_query(GameStates.playing_mines, F.data == "mines_cashout")
+async def mines_cashout(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    game_state = data['mines_game']
+    bet = data['bet']
+    currency = data['currency']
+    user_id = callback.from_user.id
+    
+    if not game_state['revealed']:
+        await callback.answer("Откройте хотя бы одну ячейку!")
+        return
+    
+    win_amount = bet * game_state['multiplier']
+    
+    # Начисляем выигрыш (ставка не списывается заранее в минах)
+    db.update_balance(user_id, currency, win_amount - bet)
+    db.add_game_record(
+        user_id, 'mines', bet, currency,
+        'win', win_amount, game_state
+    )
+    
+    await state.clear()
+    await callback.message.edit_text(
+        f"💰 *Вы забрали выигрыш!*\n\n"
+        f"Открыто ячеек: {len(game_state['revealed'])}\n"
+        f"Множитель: x{game_state['multiplier']}\n\n"
+        f"💎 Выигрыш: *{win_amount:.2f}* {'⭐' if currency == 'stars' else '💎'}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Играть снова", callback_data="game_mines")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+        ])
+    )
+
+# Депозиты
+@dp.callback_query(F.data == "deposit")
+async def deposit_menu(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(DepositStates.choosing_currency)
+    await callback.message.edit_text(
+        "💰 *Пополнение баланса*\n\n"
+        "Выберите валюту:",
+        parse_mode="Markdown",
+        reply_markup=currency_keyboard()
+    )
+
+@dp.callback_query(DepositStates.choosing_currency, F.data.startswith("currency_"))
+async def deposit_currency(callback: CallbackQuery, state: FSMContext):
+    currency = callback.data.replace("currency_", "")
+    await state.update_data(currency=currency)
+    await state.set_state(DepositStates.entering_amount)
+    
+    if currency == "stars":
+        # Для Stars используем Telegram Payments
+        await callback.message.edit_text(
+            "⭐ *Пополнение Stars*\n\n"
+            "Выберите сумму пополнения:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⭐ 100 Stars", callback_data="deposit_stars_100")],
+                [InlineKeyboardButton(text="⭐ 500 Stars", callback_data="deposit_stars_500")],
+                [InlineKeyboardButton(text="⭐ 1000 Stars", callback_data="deposit_stars_1000")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")]
+            ])
+        )
+    else:
+        # Для TON показываем адрес кошелька
+        memo = ton_payments.generate_payment_memo(callback.from_user.id)
+        await state.update_data(ton_memo=memo)
+        
+        await callback.message.edit_text(
+            f"💎 *Пополнение TON*\n\n"
+            f"Отправьте TON на кошелёк:\n"
+            f"`{config.TON_WALLET}`\n\n"
+            f"⚠️ Обязательно укажите в комментарии:\n"
+            f"`{memo}`\n\n"
+            f"После отправки нажмите кнопку проверки.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Проверить платёж", callback_data="check_ton_payment")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")]
+            ])
+        )
+
+@dp.callback_query(F.data.startswith("deposit_stars_"))
+async def send_stars_invoice(callback: CallbackQuery, state: FSMContext):
+    amount = int(callback.data.replace("deposit_stars_", ""))
+    user_id = callback.from_user.id
+    
+    payload = star_payments.create_invoice_payload(user_id, amount, "deposit")
+    
+    # Создаём инвойс для Telegram Stars
+    prices = [LabeledPrice(label=f"{amount} Stars", amount=amount)]
+    
+    await callback.message.answer_invoice(
+        title=f"Покупка {amount} Stars",
+        description=f"Пополнение баланса на {amount} Stars для игры",
+        payload=payload,
+        currency="XTR",  # Telegram Stars
+        prices=prices
+    )
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout: PreCheckoutQuery):
+    await pre_checkout.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: Message):
+    payment = message.successful_payment
+    payload_data = star_payments.parse_invoice_payload(payment.invoice_payload)
+    
+    user_id = payload_data['user_id']
+    amount = payload_data['amount']
+    
+    # Начисляем Stars
+    db.update_balance(user_id, 'stars', amount)
+    db.add_transaction(
+        user_id, 'deposit', 'stars', amount, 'completed',
+        telegram_payment_id=payment.telegram_payment_charge_id
+    )
+    
+    await message.answer(
+        f"✅ *Успешно!*\n\n"
+        f"На ваш баланс зачислено: ⭐ *{amount}* Stars",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard()
+    )
+
+@dp.callback_query(F.data == "check_ton_payment")
+async def check_ton_payment(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    memo = data.get('ton_memo')
+    
+    if not memo:
+        await callback.answer("Ошибка: memo не найден")
+        return
+    
+    # Проверяем платёж (упрощённая логика)
+    await callback.answer("🔍 Проверяем платёж...", show_alert=True)
+    
+    # В реальном боте здесь нужна проверка через API
+    # found = await ton_payments.check_payment(amount, memo)
+    
+    await callback.message.edit_text(
+        "⏳ *Платёж обрабатывается*\n\n"
+        "Обычно это занимает 1-5 минут.\n"
+        "После подтверждения баланс будет обновлён автоматически.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Проверить снова", callback_data="check_ton_payment")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="back_main")]
+        ])
+    )
+
+# Навигация
+@dp.callback_query(F.data == "back_main")
+async def back_to_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "🎰 *Главное меню*\n\n"
+        "Выберите действие:",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard()
+    )
+
+@dp.callback_query(F.data == "back_games")
+async def back_to_games(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(GameStates.choosing_game)
+    await callback.message.edit_text(
+        "🎮 *Выберите игру:*",
+        parse_mode="Markdown",
+        reply_markup=games_keyboard()
+    )
+
+@dp.callback_query(F.data == "cancel_game")
+async def cancel_game(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Игра отменена\n\n"
+        "Выберите действие:",
+        reply_markup=main_menu_keyboard()
+    )
+
+# Запуск
 async def main():
-    admins = load_admins()
-    logging.info(f"Запуск бота... Владельцы: {admins}")
+    logger.info("Starting bot...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
